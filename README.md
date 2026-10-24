@@ -9,7 +9,10 @@ An interactive Terminal script for safely copying data between mounted disks.
 - Check destination free space before copying, with a 5% safety margin.
 - Display a live per-file progress bar.
 - Verify copied contents using checksums.
-- Preserve the source and refuse to overwrite existing destination items.
+- Resume interrupted transfers by merging into existing destination folders.
+- Skip unchanged files, add missing files, and update changed files in place.
+- Repair checksum mismatches that normal size/time comparison would miss.
+- Preserve the source without creating renamed duplicate copies.
 
 ## Usage
 
@@ -25,5 +28,7 @@ be mounted and visible under `/Volumes`.
 
 ## Safety
 
-The script copies data; it does not delete anything from the source. If an item
-with the same name already exists at the destination, that item is skipped.
+The script copies data; it does not delete anything from the source. Existing
+folders are merged using the same relative paths, so rerunning the script does
+not create `copy`, `copy 2`, or similarly renamed duplicates. Files that exist
+only at the destination are left untouched.

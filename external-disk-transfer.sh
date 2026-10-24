@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Interactive, verified transfer between mounted macOS volumes.
-# The source is never deleted, and existing destination items are never replaced.
+# The source is never deleted. Existing destination folders are merged safely.
 
 set -u
 
@@ -75,6 +75,26 @@ required_space_kb() {
   printf '%s\n' "$total"
 }
 
+remaining_transfer_kb() {
+  local destination="$1"
+  local item
+  local stats
+  local item_bytes
+  local total_bytes=0
+  shift
+
+  for item in "$@"; do
+    stats="$(LC_ALL=C rsync -aEHn --stats -- "$item" "$destination/" 2>/dev/null)" || return 1
+    item_bytes="$(printf '%s\n' "$stats" | awk -F': ' \
+      '/^Total transferred file size:/ {print $2; exit}' | awk '{print $1}')"
+    item_bytes="${item_bytes//,/}"
+    [[ "$item_bytes" =~ ^[0-9]+$ ]] || return 1
+    total_bytes=$((total_bytes + item_bytes))
+  done
+
+  printf '%s\n' "$(((total_bytes + 1023) / 1024))"
+}
+
 available_space_kb() {
   local available
   available="$(df -Pk "$1" 2>/dev/null | awk 'END {print $4}')" || return 1
@@ -108,11 +128,17 @@ render_progress_bar() {
 copy_with_progress() {
   local source_item="$1"
   local destination="$2"
+  local comparison_mode="${3:-quick}"
   local rsync_status
   local line
   local percent
+  local -a rsync_options=(-a -E -H --progress)
 
-  rsync -aEH --progress -- "$source_item" "$destination/" 2>&1 |
+  if [[ "$comparison_mode" == "checksum" ]]; then
+    rsync_options+=(-c)
+  fi
+
+  rsync "${rsync_options[@]}" -- "$source_item" "$destination/" 2>&1 |
     tr '\r' '\n' |
     while IFS= read -r line; do
       if [[ "$line" =~ ([0-9]{1,3})% ]]; then
@@ -189,7 +215,6 @@ main() {
   local selection
   local index
   local item
-  local target
   local verify_report
   local required_kb
   local available_kb
@@ -208,7 +233,7 @@ main() {
 
   printf 'External Disk Transfer\n'
   printf 'Copies selected items and verifies them by checksum.\n'
-  printf 'The source is not deleted; existing destination items are skipped.\n'
+  printf 'The source is not deleted; existing folders are resumed and merged.\n'
 
   source_volume="$(choose_volume 'Choose the SOURCE disk:')" || return 1
   destination_volume="$(choose_volume 'Choose the DESTINATION disk:' "$source_volume")" || return 1
@@ -272,8 +297,8 @@ main() {
   done
 
   printf '\nChecking required and available disk space...\n'
-  required_kb="$(required_space_kb "${selected_items[@]}")" || {
-    printf 'Error: could not calculate the size of all selected data.\n' >&2
+  required_kb="$(remaining_transfer_kb "$destination_volume" "${selected_items[@]}")" || {
+    printf 'Error: could not calculate the data remaining to transfer.\n' >&2
     return 1
   }
   available_kb="$(available_space_kb "$destination_volume")" || {
@@ -282,7 +307,7 @@ main() {
   }
   required_with_headroom_kb=$(((required_kb * 105 + 99) / 100))
 
-  printf 'Selected data:        %s\n' "$(format_kb "$required_kb")"
+  printf 'Data still to copy:   %s\n' "$(format_kb "$required_kb")"
   printf 'Required with buffer: %s (includes 5%% safety margin)\n' \
     "$(format_kb "$required_with_headroom_kb")"
   printf 'Destination free:     %s\n' "$(format_kb "$available_kb")"
@@ -309,14 +334,7 @@ main() {
 
   for index in "${selected_indexes[@]}"; do
     item="${items[$index]}"
-    target="$(selected_item_path "$destination_volume" "${item##*/}")"
     printf '\nCopying: %s\n' "${item##*/}"
-
-    if [[ -e "$target" || -L "$target" ]]; then
-      printf 'SKIPPED: destination already exists: %s\n' "$target" >&2
-      failed=$((failed + 1))
-      continue
-    fi
 
     if ! copy_with_progress "$item" "$destination_volume"; then
       printf 'FAILED during copy: %s\n' "${item##*/}" >&2
@@ -329,19 +347,26 @@ main() {
       printf 'VERIFIED: %s\n' "${item##*/}"
       copied=$((copied + 1))
     else
-      printf 'VERIFICATION FAILED: %s\n' "${item##*/}" >&2
+      printf 'Mismatch detected; repairing by checksum: %s\n' "${item##*/}" >&2
       if [[ -s "$verify_report" ]]; then
         printf 'rsync comparison details:\n' >&2
         sed 's/^/  /' "$verify_report" >&2
       fi
-      failed=$((failed + 1))
+      if copy_with_progress "$item" "$destination_volume" checksum && \
+         verify_item "$item" "$destination_volume" "$verify_report"; then
+        printf 'REPAIRED AND VERIFIED: %s\n' "${item##*/}"
+        copied=$((copied + 1))
+      else
+        printf 'VERIFICATION FAILED AFTER REPAIR: %s\n' "${item##*/}" >&2
+        failed=$((failed + 1))
+      fi
     fi
   done
 
   rm -f "$verify_report"
   trap - EXIT HUP INT TERM
 
-  printf '\nTransfer summary: %d verified, %d skipped/failed.\n' "$copied" "$failed"
+  printf '\nTransfer summary: %d verified, %d failed.\n' "$copied" "$failed"
   printf 'The source disk was not changed.\n'
   [[ "$failed" -eq 0 ]]
 }
