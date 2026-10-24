@@ -13,6 +13,7 @@ An interactive Terminal script for safely copying data between mounted disks.
 - Skip unchanged files, add missing files, and update changed files in place.
 - Repair checksum mismatches that normal size/time comparison would miss.
 - Preserve the source without creating renamed duplicate copies.
+- Ignore protected macOS housekeeping folders that the destination regenerates.
 
 ## Usage
 
@@ -32,3 +33,7 @@ The script copies data; it does not delete anything from the source. Existing
 folders are merged using the same relative paths, so rerunning the script does
 not create `copy`, `copy 2`, or similarly renamed duplicates. Files that exist
 only at the destination are left untouched.
+
+“Copy everything” excludes `.Spotlight-V100`, `.Trashes`, `.fseventsd`,
+`.TemporaryItems`, and other macOS-managed volume metadata. These are not user
+data and are recreated automatically by macOS.

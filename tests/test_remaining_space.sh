@@ -20,4 +20,20 @@ if [[ "$remaining_kb" -ne 1 ]]; then
   exit 1
 fi
 
+set +e
+error_output="$(remaining_transfer_kb "$fixture/destination" \
+  "$fixture/source/does-not-exist" 2>&1 >/dev/null)"
+error_status=$?
+set -e
+
+if [[ "$error_status" -eq 0 ]]; then
+  printf 'FAIL: unreadable/missing source item should fail the space check\n' >&2
+  exit 1
+fi
+
+if [[ "$error_output" != *"$fixture/source/does-not-exist"* ]]; then
+  printf 'FAIL: space-check error should identify the problem path\n' >&2
+  exit 1
+fi
+
 printf 'Remaining-space test passed.\n'

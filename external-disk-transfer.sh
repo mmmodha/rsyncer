@@ -47,6 +47,18 @@ destination_is_safe() {
   [[ "${1%/}" != "${2%/}" ]]
 }
 
+is_transferable_item() {
+  case "${1##*/}" in
+    .Spotlight-V100|.Trashes|.fseventsd|.TemporaryItems|.DocumentRevisions-V100|\
+    .com.apple.timemachine.donotpresent|.PKInstallSandboxManager-SystemSoftware)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 space_is_sufficient() {
   [[ "$1" -le "$2" ]]
 }
@@ -84,11 +96,18 @@ remaining_transfer_kb() {
   shift
 
   for item in "$@"; do
-    stats="$(LC_ALL=C rsync -aEHn --stats -- "$item" "$destination/" 2>/dev/null)" || return 1
+    if ! stats="$(LC_ALL=C rsync -aEHn --stats -- "$item" "$destination/" 2>&1)"; then
+      printf 'Unable to inspect source item: %s\n' "$item" >&2
+      printf '%s\n' "$stats" >&2
+      return 1
+    fi
     item_bytes="$(printf '%s\n' "$stats" | awk -F': ' \
       '/^Total transferred file size:/ {print $2; exit}' | awk '{print $1}')"
     item_bytes="${item_bytes//,/}"
-    [[ "$item_bytes" =~ ^[0-9]+$ ]] || return 1
+    if [[ ! "$item_bytes" =~ ^[0-9]+$ ]]; then
+      printf 'Unable to read transfer-size statistics for: %s\n' "$item" >&2
+      return 1
+    fi
     total_bytes=$((total_bytes + item_bytes))
   done
 
@@ -222,7 +241,9 @@ main() {
   local copied=0
   local failed=0
   local i
+  local ignored_system_items=0
   local -a items=()
+  local -a discovered_items=()
   local -a selected_indexes=()
   local -a selected_items=()
 
@@ -248,8 +269,21 @@ main() {
   fi
 
   shopt -s nullglob dotglob
-  items=("$source_volume"/*)
+  discovered_items=("$source_volume"/*)
   shopt -u nullglob dotglob
+
+  for item in "${discovered_items[@]}"; do
+    if is_transferable_item "$item"; then
+      items+=("$item")
+    else
+      ignored_system_items=$((ignored_system_items + 1))
+    fi
+  done
+
+  if [[ "$ignored_system_items" -gt 0 ]]; then
+    printf 'Ignoring %d macOS housekeeping item(s) that are regenerated automatically.\n' \
+      "$ignored_system_items"
+  fi
 
   if [[ "${#items[@]}" -eq 0 ]]; then
     printf 'The source disk contains no items to copy.\n' >&2
